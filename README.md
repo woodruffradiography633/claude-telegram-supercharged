@@ -78,11 +78,13 @@ These are Claude Code commands -- run `claude` to start a session first.
 
 ### 3. Apply the supercharged version
 
-Clone this repo and replace the official plugin's server with the supercharged one:
+Clone this repo and install both the supercharged server and the daemon supervisor:
 
 ```sh
 git clone https://github.com/k1p1l0/claude-telegram-supercharged.git
 cp claude-telegram-supercharged/server.ts ~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.1/server.ts
+mkdir -p ~/.claude/scripts
+cp claude-telegram-supercharged/supervisor.ts ~/.claude/scripts/telegram-supervisor.ts
 ```
 
 ### 4. Give the server the token
@@ -101,10 +103,10 @@ The server won't connect without this -- exit your session and start a new one:
 claude --channels plugin:telegram@claude-plugins-official
 ```
 
-Or use the **daemon supervisor** for always-on operation with auto-restart (see [Daemon Mode](#daemon-mode)):
+Or use the **daemon supervisor** for always-on operation with auto-restart and context reset from Telegram (see [Daemon Mode](#daemon-mode)):
 
 ```sh
-bun supervisor.ts
+bun ~/.claude/scripts/telegram-supervisor.ts
 ```
 
 ### 6. Pair
@@ -125,12 +127,13 @@ Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers
 
 ### Updating
 
-When the official plugin updates, re-apply the supercharged server:
+When the official plugin updates, re-apply the supercharged files:
 
 ```sh
 cd claude-telegram-supercharged
 git pull
 cp server.ts ~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.1/server.ts
+cp supervisor.ts ~/.claude/scripts/telegram-supervisor.ts
 ```
 
 Then restart your Claude Code session.
@@ -218,14 +221,9 @@ The plugin ships with a **supervisor script** (`supervisor.ts`) that runs Claude
 
 ### Usage
 
-Copy the supervisor to a convenient location (or run it from the cloned repo):
+If you followed the [Getting Started](#getting-started) steps, the supervisor is already installed at `~/.claude/scripts/telegram-supervisor.ts`. Just run:
 
 ```sh
-# From the cloned repo:
-bun supervisor.ts
-
-# Or copy it alongside your scripts:
-cp supervisor.ts ~/.claude/scripts/telegram-supervisor.ts
 bun ~/.claude/scripts/telegram-supervisor.ts
 ```
 
