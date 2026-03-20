@@ -195,7 +195,14 @@ Add your bot to any Telegram group like a normal member.
 
 **3. Register the group**
 
-Find your group's numeric ID (starts with `-100...`) by temporarily adding [@userinfobot](https://t.me/userinfobot) to the group. Then in your Claude Code session:
+You need the group's numeric ID (starts with `-100...`). Several ways to find it:
+
+- **From the bot logs** -- when your bot is in the group and someone sends a message, the bot logs show the `chat_id` in stderr. Check with `claude` running and look for the group ID in the terminal output.
+- **Telegram Web** -- open [web.telegram.org](https://web.telegram.org), navigate to the group. The URL contains the group ID (e.g. `web.telegram.org/a/#-1001234567890`).
+- **Forward a message** -- forward any message from the group to [@RawDataBot](https://t.me/RawDataBot) in a DM. It replies with JSON containing the `chat.id`.
+- **BotFather API** -- after adding your bot to the group, send a message mentioning the bot, then check `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in your browser. Look for `"chat":{"id":-100...}`.
+
+Then in your Claude Code session:
 
 ```
 /telegram:access group add -100XXXXXXXXXX
