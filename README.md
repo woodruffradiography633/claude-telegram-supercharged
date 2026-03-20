@@ -57,6 +57,22 @@ Send a voice message or audio file in Telegram and Claude receives it. Voice mes
 - Downloaded eagerly to `~/.claude/channels/telegram/inbox/` like photos
 - Claude can process the audio file using available tools (transcription, analysis, etc.)
 
+### Sticker & GIF support
+Send a sticker or GIF in Telegram and Claude actually sees it. Static stickers are passed directly as images. Animated stickers and GIFs are converted to multi-frame collages so Claude can understand the visual content.
+
+- **Static stickers** (`.webp`) — passed directly to Claude as `image_path`
+- **Animated stickers** (`.tgs`, `.webm`) — extracted into a 4-frame collage at 640px per frame
+- **GIFs / animations** — Telegram sends these as `.mp4`; 4 frames are extracted and stitched into a horizontal strip
+- Sticker emoji and pack name are included in the notification text for extra context
+- Uses `ffmpeg` for frame extraction and collage stitching — falls back gracefully if unavailable
+
+### Emoji reaction validation
+The official plugin passes any emoji to Telegram's `setMessageReaction` API, which silently rejects non-whitelisted emoji with a cryptic `REACTION_INVALID` error. We added client-side validation.
+
+- Full whitelist of 70+ Telegram-allowed reaction emoji built into the plugin
+- Invalid emoji are caught before the API call with a helpful error message listing valid options
+- Tool description updated with the complete emoji list so Claude picks valid reactions from the start
+
 ## Roadmap
 
 Here's what we're planning to build. PRs welcome!
@@ -69,6 +85,7 @@ Here's what we're planning to build. PRs welcome!
 - [x] **Reaction status indicators** - 👀 → 🔥 → 👍 processing status via emoji reactions
 - [x] **Voice & audio messages** - Download and transcribe voice messages using local open-source tools
 - [x] **Sticker & GIF support** - Download stickers and GIFs, convert to frame collages so Claude can see them
+- [x] **Emoji reaction validation** - Client-side whitelist prevents cryptic REACTION_INVALID errors
 
 ### Planned
 
