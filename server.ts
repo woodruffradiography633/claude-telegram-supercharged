@@ -346,7 +346,7 @@ const mcp = new Server(
     instructions: [
       'The sender reads Telegram, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat. IMPORTANT: When a Telegram message asks you to do something (write a post, generate code, answer a question), ALWAYS send the full result back via the reply tool. Never just acknowledge the request — deliver the actual content to Telegram. The user may only be reading Telegram, not your terminal.',
       '',
-      'Messages from Telegram arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has an image_path attribute, Read that file — it is a photo the sender attached. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+      'Messages from Telegram arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has an image_path attribute, Read that file — it is a photo the sender attached. If the tag has an audio_path attribute, that is a voice message or audio file the sender recorded. To transcribe it, try these in order: (1) Run `which whisper` — if available, run `whisper <audio_path> --output_format txt --output_dir /tmp` and read the resulting .txt file. (2) If whisper is not installed, try `which ffmpeg` — if available, convert to wav with `ffmpeg -i <audio_path> /tmp/voice.wav -y` then note the file is saved but transcription requires whisper. (3) If neither is available, reply to the user that you received their voice message but cannot transcribe it — suggest they install openai-whisper (`pip install openai-whisper`) for voice support. Always reply with the transcription result or status via the reply tool. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, edit_message to update a message you previously sent (e.g. progress → result), and ask_user to present inline buttons and wait for a choice.',
       '',
@@ -629,9 +629,53 @@ bot.on('message:photo', async ctx => {
       const path = join(INBOX_DIR, `${Date.now()}-${best.file_unique_id}.${ext}`)
       mkdirSync(INBOX_DIR, { recursive: true })
       writeFileSync(path, buf)
-      return path
+      return { path, type: 'image' as const }
     } catch (err) {
       process.stderr.write(`telegram channel: photo download failed: ${err}\n`)
+      return undefined
+    }
+  })
+})
+
+bot.on('message:voice', async ctx => {
+  const caption = ctx.message.caption ?? '(voice message)'
+  await handleInbound(ctx, caption, async () => {
+    const voice = ctx.message.voice
+    try {
+      const file = await ctx.api.getFile(voice.file_id)
+      if (!file.file_path) return undefined
+      const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+      const res = await fetch(url)
+      const buf = Buffer.from(await res.arrayBuffer())
+      const ext = file.file_path.split('.').pop() ?? 'ogg'
+      const path = join(INBOX_DIR, `${Date.now()}-${voice.file_unique_id}.${ext}`)
+      mkdirSync(INBOX_DIR, { recursive: true })
+      writeFileSync(path, buf)
+      return { path, type: 'audio' as const }
+    } catch (err) {
+      process.stderr.write(`telegram channel: voice download failed: ${err}\n`)
+      return undefined
+    }
+  })
+})
+
+bot.on('message:audio', async ctx => {
+  const caption = ctx.message.caption ?? '(audio file)'
+  await handleInbound(ctx, caption, async () => {
+    const audio = ctx.message.audio
+    try {
+      const file = await ctx.api.getFile(audio.file_id)
+      if (!file.file_path) return undefined
+      const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+      const res = await fetch(url)
+      const buf = Buffer.from(await res.arrayBuffer())
+      const ext = file.file_path.split('.').pop() ?? 'mp3'
+      const path = join(INBOX_DIR, `${Date.now()}-${audio.file_unique_id}.${ext}`)
+      mkdirSync(INBOX_DIR, { recursive: true })
+      writeFileSync(path, buf)
+      return { path, type: 'audio' as const }
+    } catch (err) {
+      process.stderr.write(`telegram channel: audio download failed: ${err}\n`)
       return undefined
     }
   })
@@ -720,7 +764,7 @@ bot.on('message_reaction', async ctx => {
 async function handleInbound(
   ctx: Context,
   text: string,
-  downloadImage: (() => Promise<string | undefined>) | undefined,
+  downloadMedia: (() => Promise<{ path: string; type: 'image' | 'audio' } | undefined>) | undefined,
 ): Promise<void> {
   const result = gate(ctx)
 
@@ -753,10 +797,10 @@ async function handleInbound(
       .catch(() => {})
   }
 
-  const imagePath = downloadImage ? await downloadImage() : undefined
+  const media = downloadMedia ? await downloadMedia() : undefined
 
-  // image_path goes in meta only — an in-content "[image attached — read: PATH]"
-  // annotation is forgeable by any allowlisted sender typing that string.
+  // media paths go in meta only — an in-content annotation is forgeable
+  // by any allowlisted sender typing that string.
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -767,7 +811,8 @@ async function handleInbound(
         user: from.username ?? String(from.id),
         user_id: String(from.id),
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
-        ...(imagePath ? { image_path: imagePath } : {}),
+        ...(media?.type === 'image' ? { image_path: media.path } : {}),
+        ...(media?.type === 'audio' ? { audio_path: media.path } : {}),
       },
     },
   })

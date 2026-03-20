@@ -50,6 +50,13 @@ Claude now reacts to your messages with emoji to show processing status — like
 
 Beyond status, Claude also reacts expressively when a message genuinely stands out — 🔥 for impressive work, 😂 for funny messages, ❤ for heartfelt ones, 🎉 for celebrations. Selective, not robotic.
 
+### Voice & audio message support
+Send a voice message or audio file in Telegram and Claude receives it. Voice messages and audio files are downloaded to the inbox and the path is passed to Claude via `audio_path` in the notification metadata.
+
+- Supports both voice messages (recorded in-app, `.ogg`) and audio files (forwarded `.mp3`, etc.)
+- Downloaded eagerly to `~/.claude/channels/telegram/inbox/` like photos
+- Claude can process the audio file using available tools (transcription, analysis, etc.)
+
 ## Roadmap
 
 Here's what we're planning to build. PRs welcome!
@@ -60,11 +67,11 @@ Here's what we're planning to build. PRs welcome!
 - [x] **Emoji reaction tracking** - Claude receives and acts on user reactions
 - [x] **Ask User inline buttons** - Tappable choices with blocking wait for response
 - [x] **Reaction status indicators** - 👀 → 🔥 → 👍 processing status via emoji reactions
+- [x] **Voice & audio messages** - Download and transcribe voice messages using local open-source tools
 
 ### Planned
 
 - [ ] **Message history buffer** - Keep a rolling buffer of recent messages so Claude has context without asking users to repeat themselves
-- [ ] **Voice message transcription** - Auto-transcribe voice messages before forwarding to Claude
 - [ ] **Conversation threading** - Smart thread management for group chats
 - [ ] **Scheduled messages** - Send messages at a specific time
 - [ ] **Multi-bot support** - Run multiple bots from one server instance
@@ -166,13 +173,23 @@ Then restart your Claude Code session.
 | --- | --- |
 | Text message | Forwarded to Claude as a channel notification with `chat_id`, `message_id`, `user`, `ts`. |
 | Photo | Downloaded to inbox, path included in notification so Claude can `Read` it. |
-| Emoji reaction | **NEW** — When a user reacts to a bot message, Claude receives a notification with `event_type: "reaction"`, the emoji, and the `message_id`. Use as lightweight feedback. |
+| Emoji reaction | When a user reacts to a bot message, Claude receives a notification with `event_type: "reaction"`, the emoji, and the `message_id`. Use as lightweight feedback. |
+| Voice message | **NEW** — Downloaded to inbox as `.ogg`, path included in notification as `audio_path`. Claude transcribes using local whisper if available. |
+| Audio file | **NEW** — Forwarded audio files (`.mp3`, etc.) downloaded to inbox, path included as `audio_path`. |
 
 Inbound messages trigger a typing indicator automatically — Telegram shows "botname is typing..." while the assistant works on a response.
 
 ## Photos
 
 Inbound photos are downloaded to `~/.claude/channels/telegram/inbox/` and the local path is included in the `<channel>` notification so the assistant can `Read` it. Telegram compresses photos — if you need the original file, send it as a document instead (long-press → Send as File).
+
+## Voice & audio messages
+
+Voice messages and audio files are downloaded to `~/.claude/channels/telegram/inbox/` and the path is included as `audio_path` in the notification. Claude will attempt to transcribe using locally installed tools:
+
+1. **[openai-whisper](https://github.com/openai/whisper)** (recommended) — `pip install openai-whisper`. Supports 99 languages, runs fully offline.
+2. **ffmpeg only** — if whisper isn't installed but ffmpeg is, Claude converts to `.wav` for manual review.
+3. **No tools** — Claude tells you the voice was received and suggests installing whisper.
 
 ## No history or search
 
