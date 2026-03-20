@@ -220,6 +220,57 @@ Voice messages and audio files are downloaded to `~/.claude/channels/telegram/in
 2. **ffmpeg only** — if whisper isn't installed but ffmpeg is, Claude converts to `.wav` for manual review.
 3. **No tools** — Claude tells you the voice was received and suggests installing whisper.
 
+## Group chats & conversation threading
+
+The plugin supports group chats with smart conversation threading — Claude can follow reply chains, see who said what, and respond in the correct thread.
+
+### Setup
+
+**1. Disable privacy mode in BotFather**
+
+By default, Telegram bots in groups only see commands and messages that mention them. For full thread tracking, disable privacy mode:
+
+1. Open [@BotFather](https://t.me/BotFather) on Telegram
+2. Send `/mybots` → select your bot
+3. **Bot Settings** → **Group Privacy** → **Turn off**
+
+> If you prefer to keep privacy mode on, the bot will still work — it just won't see messages that don't mention it, so thread tracking will be incomplete.
+
+**2. Add the bot to a group**
+
+Add your bot to any Telegram group like a normal member.
+
+**3. Register the group**
+
+Find your group's numeric ID (starts with `-100...`) by temporarily adding [@userinfobot](https://t.me/userinfobot) to the group. Then in your Claude Code session:
+
+```
+/telegram:access group add -100XXXXXXXXXX
+```
+
+By default, `requireMention` is `true` — the bot only responds when mentioned or replied to. To let it see all messages:
+
+```
+/telegram:access group update -100XXXXXXXXXX requireMention false
+```
+
+**4. Restart Claude Code**
+
+```sh
+claude --channels plugin:telegram@claude-plugins-official
+```
+
+### How threading works
+
+- When someone replies to a message in the group, Claude receives `reply_to_text` and `reply_to_user` showing what was replied to
+- The plugin tracks up to 200 messages per chat (4-hour TTL) and walks reply chains up to 3 levels deep, providing `thread_context` in the notification
+- Claude's own sent messages are tracked too, so reply chains work end-to-end
+- Claude automatically threads its responses to the message that triggered them
+
+### Forum topics
+
+If your supergroup has **Topics** enabled, the plugin forwards `thread_id` (Telegram's `message_thread_id`) and passes it through to replies — keeping conversations in their correct Forum topic automatically.
+
 ## No history or search
 
 Telegram's Bot API exposes **neither** message history nor search. The bot only sees messages as they arrive — no `fetch_messages` tool exists. If the assistant needs earlier context, it will ask you to paste or summarize.
