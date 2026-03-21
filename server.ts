@@ -161,6 +161,47 @@ async function ensureTelegraphToken(authorName: string): Promise<string> {
   return telegraphToken;
 }
 
+/**
+ * Upload a local image to Telegram and return a public URL.
+ * Uses the bot's own chat to send the photo, gets the file_id,
+ * then constructs a public URL via getFile.
+ */
+async function uploadImageForTelegraph(localPath: string, chatId: string): Promise<string | undefined> {
+  try {
+    const imgData = readFileSync(localPath);
+    const ext = extname(localPath).slice(1) || "jpg";
+    const formData = new FormData();
+    formData.append("chat_id", chatId);
+    formData.append("photo", new Blob([imgData]), `image.${ext}`);
+    // Send photo silently (disable_notification) to avoid spamming the chat
+    formData.append("disable_notification", "true");
+
+    const sendRes = await fetch(`https://api.telegram.org/bot${TOKEN}/sendPhoto`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!sendRes.ok) return undefined;
+    const sendData = (await sendRes.json()) as {
+      ok: boolean;
+      result?: { photo?: Array<{ file_id: string }> };
+    };
+    const photos = sendData.result?.photo;
+    if (!photos?.length) return undefined;
+    // Largest photo is the last element
+    const fileId = photos[photos.length - 1].file_id;
+
+    const fileRes = await fetch(`https://api.telegram.org/bot${TOKEN}/getFile?file_id=${fileId}`);
+    if (!fileRes.ok) return undefined;
+    const fileData = (await fileRes.json()) as { ok: boolean; result?: { file_path: string } };
+    if (!fileData.result?.file_path) return undefined;
+
+    return `https://api.telegram.org/file/bot${TOKEN}/${fileData.result.file_path}`;
+  } catch (err) {
+    process.stderr.write(`telegram channel: image upload for Telegraph failed: ${err}\n`);
+    return undefined;
+  }
+}
+
 type TelegraphNode = string | { tag: string; attrs?: Record<string, string>; children?: TelegraphNode[] };
 
 function inlineToNodes(text: string): TelegraphNode[] {
@@ -1112,7 +1153,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           content: {
             type: "string",
             description:
-              "Article body in Markdown. Supports # headings, **bold**, *italic*, `code`, ```code blocks```, > blockquotes, - bullet lists, 1. numbered lists, [text](url) links, --- rules, and ![alt](url) images (must be publicly accessible URL).",
+              "Article body in Markdown. Supports # headings, **bold**, *italic*, `code`, ```code blocks```, > blockquotes, - bullet lists, 1. numbered lists, [text](url) links, --- rules, and ![alt](url) images. Images can be public URLs or local file paths (local files are auto-uploaded via Telegram).",
+          },
+          chat_id: {
+            type: "string",
+            description: "Chat ID — needed to upload local images via Telegram. Required if content has local image paths.",
           },
           author_name: {
             type: "string",
@@ -1383,9 +1428,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case "create_telegraph_page": {
         const title = args.title as string;
-        const content = args.content as string;
+        let content = args.content as string;
+        const chatId = args.chat_id as string | undefined;
         const authorName = (args.author_name as string | undefined) ?? "Claude";
         const authorUrl = args.author_url as string | undefined;
+
+        // Upload local images to Telegram and replace paths with public URLs.
+        const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+        const imgMatches = [...content.matchAll(imgRegex)];
+        for (const match of imgMatches) {
+          const imgPath = match[2];
+          // Skip already-public URLs
+          if (imgPath.startsWith("http://") || imgPath.startsWith("https://")) continue;
+          // Local file — upload via Telegram
+          if (chatId && existsSync(imgPath)) {
+            const publicUrl = await uploadImageForTelegraph(imgPath, chatId);
+            if (publicUrl) {
+              content = content.replace(match[0], `![${match[1]}](${publicUrl})`);
+            }
+          }
+        }
 
         const token = await ensureTelegraphToken(authorName);
         const tNodes = markdownToTelegraphNodes(content);
