@@ -48,6 +48,7 @@ Drop-in upgrade for the [official Claude Code Telegram plugin](https://github.co
 | **👥 Group Pairing** | Add bot to group, mention it, get pairing code. No hunting for numeric chat IDs. |
 | **🔒 Shell Injection Protection** | All subprocess calls use `spawnSync` with array args. No shell interpretation of file paths. |
 | **🧹 Session Management** | `clear_history` + `save_memory` tools. Clean up with context preservation. |
+| **📰 Telegraph Instant View** | Long research, articles, and analyses are published to telegra.ph and sent as Instant View links. Full Markdown formatting, code blocks, images -- native article reader inside Telegram. |
 | **🔄 Daemon Mode** | Supervisor script auto-restarts Claude on crash or context reset. Say "clear everything" in Telegram and Claude restarts with a fresh session -- memory preserved, zero downtime. |
 | **📊 Smart Caching** | Voice/audio files cached between middleware and handlers. No double downloads, no double transcriptions. |
 
@@ -150,6 +151,7 @@ Then restart your Claude Code session.
 | `search_messages` | Search message history by text pattern. Takes `chat_id`, `query` (substring match), optional `limit` (default 20, max 100). Returns matching messages. |
 | `clear_history` | Clear all message history for a chat. Always confirm with `ask_user` first, and call `save_memory` before clearing to preserve context. Pass `restart_context: true` to signal the supervisor daemon to restart Claude for a full context reset. |
 | `save_memory` | Save a conversation summary to persistent memory. Loaded into Claude's instructions on every startup. Use before `clear_history` so context survives across sessions. |
+| `create_telegraph_page` | Publish long-form content to Telegraph (telegra.ph) and return a URL. Telegram renders it as Instant View -- a native article reader. Takes `title`, `content` (Markdown), optional `author_name` and `author_url`. Auto-creates Telegraph account on first use. |
 
 ### Inbound Events
 
@@ -355,6 +357,7 @@ Photos and voice messages are downloaded eagerly on arrival -- there's no way to
 - [x] Smart media caching (no double downloads)
 
 - [x] Daemon mode supervisor (auto-restart + context reset from Telegram)
+- [x] Telegraph Instant View for long-form content
 
 ### Planned
 - [ ] **Remote permission approval** -- Approve Claude Code permission prompts via Telegram inline buttons

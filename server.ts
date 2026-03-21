@@ -136,6 +136,147 @@ const DB_PATH = join(DATA_DIR, "messages.db");
 const MEMORY_FILE = join(DATA_DIR, "memory.md");
 const MEMORY_MAX_CHARS = 10_000;
 
+// ── Telegraph integration ─────────────────────────────────────────────
+// Publishes long-form content to telegra.ph for Instant View in Telegram.
+// Token auto-creates on first use and persists to .env.
+
+let telegraphToken: string | undefined = process.env.TELEGRAPH_ACCESS_TOKEN;
+
+async function ensureTelegraphToken(authorName: string): Promise<string> {
+  if (telegraphToken) return telegraphToken;
+  const res = await fetch("https://api.telegra.ph/createAccount", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ short_name: "claude_bot", author_name: authorName }),
+  });
+  if (!res.ok) throw new Error(`Telegraph createAccount HTTP ${res.status}`);
+  const data = (await res.json()) as { ok: boolean; result?: { access_token: string }; error?: string };
+  if (!data.ok || !data.result?.access_token) throw new Error(`Telegraph createAccount failed: ${data.error}`);
+  telegraphToken = data.result.access_token;
+  try {
+    const existing = readFileSync(ENV_FILE, "utf8").trimEnd();
+    const withoutOld = existing.split("\n").filter((l) => !l.startsWith("TELEGRAPH_ACCESS_TOKEN=")).join("\n");
+    writeFileSync(ENV_FILE, `${withoutOld}\nTELEGRAPH_ACCESS_TOKEN=${telegraphToken}\n`, { mode: 0o600 });
+  } catch {}
+  return telegraphToken;
+}
+
+type TelegraphNode = string | { tag: string; attrs?: Record<string, string>; children?: TelegraphNode[] };
+
+function inlineToNodes(text: string): TelegraphNode[] {
+  const nodes: TelegraphNode[] = [];
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|\[(.+?)\]\((.+?)\))/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[2] != null) nodes.push({ tag: "b", children: [m[2]] });
+    else if (m[3] != null) nodes.push({ tag: "i", children: [m[3]] });
+    else if (m[4] != null) nodes.push({ tag: "code", children: [m[4]] });
+    else if (m[5] != null) nodes.push({ tag: "a", attrs: { href: m[6] }, children: [m[5]] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function markdownToTelegraphNodes(markdown: string): TelegraphNode[] {
+  const nodes: TelegraphNode[] = [];
+  const lines = markdown.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    if (line.startsWith("```")) {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++;
+      nodes.push({ tag: "pre", children: [{ tag: "code", children: [codeLines.join("\n")] }] });
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^[-*_]{3,}\s*$/.test(line)) { nodes.push({ tag: "hr" }); i++; continue; }
+
+    // Headings (h4 before h3 so #### matches first)
+    const h4 = line.match(/^#{4}\s+(.+)/);
+    if (h4) { nodes.push({ tag: "h4", children: inlineToNodes(h4[1]) }); i++; continue; }
+    const h3 = line.match(/^#{1,3}\s+(.+)/);
+    if (h3) { nodes.push({ tag: "h3", children: inlineToNodes(h3[1]) }); i++; continue; }
+
+    // Blockquote
+    if (line.startsWith("> ")) {
+      const bqLines: string[] = [];
+      while (i < lines.length && lines[i].startsWith("> ")) {
+        bqLines.push(lines[i].slice(2));
+        i++;
+      }
+      nodes.push({ tag: "blockquote", children: [{ tag: "p", children: inlineToNodes(bqLines.join(" ")) }] });
+      continue;
+    }
+
+    // Unordered list
+    if (/^[-*] /.test(line)) {
+      const items: TelegraphNode[] = [];
+      while (i < lines.length && /^[-*] /.test(lines[i])) {
+        items.push({ tag: "li", children: inlineToNodes(lines[i].slice(2)) });
+        i++;
+      }
+      nodes.push({ tag: "ul", children: items });
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\. /.test(line)) {
+      const items: TelegraphNode[] = [];
+      while (i < lines.length && /^\d+\. /.test(lines[i])) {
+        items.push({ tag: "li", children: inlineToNodes(lines[i].replace(/^\d+\. /, "")) });
+        i++;
+      }
+      nodes.push({ tag: "ol", children: items });
+      continue;
+    }
+
+    // Standalone image
+    const imgMatch = line.match(/^!\[([^\]]*)\]\((.+?)\)\s*$/);
+    if (imgMatch) {
+      const figChildren: TelegraphNode[] = [{ tag: "img", attrs: { src: imgMatch[2] } }];
+      if (imgMatch[1]) figChildren.push({ tag: "figcaption", children: [imgMatch[1]] });
+      nodes.push({ tag: "figure", children: figChildren });
+      i++;
+      continue;
+    }
+
+    // Blank line
+    if (line.trim() === "") { i++; continue; }
+
+    // Paragraph
+    const paraLines: string[] = [];
+    while (i < lines.length && lines[i].trim() !== "" && !lines[i].startsWith("#")
+      && !lines[i].startsWith("```") && !lines[i].startsWith("> ")
+      && !/^[-*] /.test(lines[i]) && !/^\d+\. /.test(lines[i])
+      && !/^[-*_]{3,}\s*$/.test(lines[i])
+      && !/^!\[/.test(lines[i])) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    if (paraLines.length > 0) {
+      nodes.push({ tag: "p", children: inlineToNodes(paraLines.join(" ")) });
+    }
+  }
+
+  if (JSON.stringify(nodes).length > 65_536) {
+    throw new Error("content too large for Telegraph (max 64 KB) — shorten the article or split into multiple pages");
+  }
+  return nodes;
+}
+
 // ── Conversation memory ──────────────────────────────────────────────
 // Persists short summaries across /clear so context is never fully lost.
 // Loaded into MCP instructions at boot. When the file exceeds
@@ -766,6 +907,8 @@ const mcp = new Server(
       "",
       "SESSION MANAGEMENT: Use clear_history to wipe a chat's message history. Before clearing, ALWAYS: (1) use ask_user to confirm with the user, (2) call get_history to retrieve recent messages, (3) write a 2-3 sentence summary of the conversation, (4) call save_memory with the summary so context persists across clears. (5) Send a Telegram reply confirming the reset. (6) THEN call clear_history. If the user wants a full context reset (clear both history AND conversation context), pass restart_context: true to clear_history — this signals the supervisor daemon to restart Claude for a fresh session. IMPORTANT: Send the Telegram confirmation reply BEFORE calling clear_history with restart_context, because the process will be killed ~3 seconds after the signal is written.",
       "",
+      "TELEGRAPH FOR LONG CONTENT: When you produce content longer than ~800 characters, multiple sections, code blocks, or structured documents (research summaries, analyses, how-to guides, code reviews), use create_telegraph_page instead of sending a wall of text via reply. Write the full content in Markdown, call create_telegraph_page with a title and the body, then send the returned URL via reply with a one-sentence summary. Telegram renders Telegraph links as Instant View — a native rich article reader. Do NOT use Telegraph for short answers, casual replies, or single-paragraph responses. Images in the markdown must use publicly accessible URLs (not local file paths).",
+      "",
       ...(readMemory() ? ["CONVERSATION MEMORY (summaries from previous sessions):", readMemory()] : []),
     ].join("\n"),
   },
@@ -953,6 +1096,34 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["chat_id", "summary"],
+      },
+    },
+    {
+      name: "create_telegraph_page",
+      description:
+        "Publish long-form content (research results, articles, analyses, reports) to Telegraph (telegra.ph) and return a public URL. Telegram renders Telegraph links as Instant View — a native full-screen article reader. Use this instead of reply when the content is longer than ~800 characters, contains multiple headings/sections, or includes code blocks. After creating the page, send the URL via the reply tool with a one-sentence summary.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Page title. Shown as the article headline.",
+          },
+          content: {
+            type: "string",
+            description:
+              "Article body in Markdown. Supports # headings, **bold**, *italic*, `code`, ```code blocks```, > blockquotes, - bullet lists, 1. numbered lists, [text](url) links, --- rules, and ![alt](url) images (must be publicly accessible URL).",
+          },
+          author_name: {
+            type: "string",
+            description: "Optional byline under the title. Defaults to 'Claude'.",
+          },
+          author_url: {
+            type: "string",
+            description: "Optional URL linked from the author name.",
+          },
+        },
+        required: ["title", "content"],
       },
     },
   ],
@@ -1209,6 +1380,35 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         appendMemory(`**Chat ${chat_id}**: ${summary}`);
         return { content: [{ type: "text", text: "Memory saved. Summary will be loaded on next startup." }] };
+      }
+      case "create_telegraph_page": {
+        const title = args.title as string;
+        const content = args.content as string;
+        const authorName = (args.author_name as string | undefined) ?? "Claude";
+        const authorUrl = args.author_url as string | undefined;
+
+        const token = await ensureTelegraphToken(authorName);
+        const tNodes = markdownToTelegraphNodes(content);
+
+        const body: Record<string, unknown> = {
+          access_token: token,
+          title,
+          author_name: authorName,
+          content: tNodes,
+          return_content: false,
+        };
+        if (authorUrl) body.author_url = authorUrl;
+
+        const res = await fetch("https://api.telegra.ph/createPage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`Telegraph API HTTP ${res.status}`);
+        const data = (await res.json()) as { ok: boolean; result?: { url: string; path: string }; error?: string };
+        if (!data.ok || !data.result?.url) throw new Error(`Telegraph createPage failed: ${data.error ?? "unknown"}`);
+
+        return { content: [{ type: "text", text: `Telegraph page created: ${data.result.url}` }] };
       }
       default:
         return {
