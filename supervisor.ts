@@ -62,18 +62,32 @@ function backoffMs(): number {
 	return Math.min(b, BACKOFF_MAX_MS);
 }
 
+async function killProcessTree(pid: number, signal: string): Promise<void> {
+	try {
+		// Kill the entire process group (negative PID)
+		process.kill(-pid, signal);
+	} catch {
+		// If process group kill fails, fall back to direct kill
+		try {
+			process.kill(pid, signal);
+		} catch {}
+	}
+}
+
 async function killChild(child: ChildProcess): Promise<void> {
 	if (!child.pid || child.exitCode !== null) return;
 
-	child.kill("SIGTERM");
+	const pid = child.pid;
+	log(`killing process tree (pid=${pid})`);
+
+	// Send SIGTERM to the entire process group
+	await killProcessTree(pid, "SIGTERM");
 
 	await new Promise<void>((resolve) => {
 		const deadline = setTimeout(() => {
 			if (child.exitCode === null) {
-				log("graceful timeout — sending SIGKILL");
-				try {
-					child.kill("SIGKILL");
-				} catch {}
+				log("graceful timeout — sending SIGKILL to process tree");
+				void killProcessTree(pid, "SIGKILL");
 			}
 			resolve();
 		}, GRACEFUL_TIMEOUT_MS);
@@ -95,12 +109,19 @@ function startClaude(): void {
 
 	lastStartTime = Date.now();
 	const args = [...BASE_ARGS, ...EXTRA_ARGS];
-	log(`spawning: ${CLAUDE_CMD} ${args.join(" ")}`);
+	log(`spawning: ${CLAUDE_CMD} ${args.join(" ")} (cwd: ${cwd})`);
 
+	// Always start Claude in the user's home directory so it picks up ~/CLAUDE.md
+	// and doesn't depend on where the supervisor was launched from.
+	const cwd = process.env.CLAUDE_DAEMON_CWD || homedir();
 	const child = spawn(CLAUDE_CMD, args, {
 		stdio: "inherit",
+		cwd,
 		env: { ...process.env },
+		detached: true, // Create a new process group so we can kill the entire tree
 	});
+	// Despite detached:true, we still want the child to die with the supervisor.
+	// unref() is NOT called — the supervisor event loop keeps running.
 	currentChild = child;
 
 	child.on("exit", (code, signal) => {
@@ -111,13 +132,13 @@ function startClaude(): void {
 			// Restart triggered by signal file — restart immediately
 			pendingRestart = false;
 			restartCount = 0;
-			log("context reset complete — starting fresh session");
-			setTimeout(startClaude, 200);
+			log("context reset complete — waiting for sub-processes to release connections...");
+			setTimeout(startClaude, 2000);
 		} else if (code === 0) {
 			// Clean exit — user typed /exit or similar
-			log("claude exited cleanly (code=0) — restarting");
+			log("claude exited cleanly (code=0) — restarting after cleanup delay");
 			restartCount = 0;
-			setTimeout(startClaude, 200);
+			setTimeout(startClaude, 2000);
 		} else {
 			// Crash — apply backoff
 			restartCount++;
@@ -205,9 +226,50 @@ async function shutdown(sig: string): Promise<void> {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
+// Kill any orphaned claude --channels telegram processes from previous runs
+async function cleanupOrphans(): Promise<void> {
+	const { execSync } = await import("node:child_process");
+	try {
+		const myPid = process.pid;
+		// Find claude processes with telegram channel flag, excluding our own PID
+		const result = execSync(
+			`pgrep -f 'claude.*--channels.*telegram' || true`,
+			{ encoding: "utf-8" },
+		).trim();
+		if (!result) return;
+
+		const pids = result
+			.split("\n")
+			.map((p) => Number.parseInt(p.trim(), 10))
+			.filter((p) => !Number.isNaN(p) && p !== myPid);
+
+		for (const pid of pids) {
+			log(`killing orphaned process pid=${pid}`);
+			try {
+				process.kill(pid, "SIGTERM");
+			} catch {}
+		}
+
+		if (pids.length > 0) {
+			// Give them time to die
+			await new Promise((r) => setTimeout(r, 2000));
+			// Force kill any survivors
+			for (const pid of pids) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {} // already dead — fine
+			}
+		}
+	} catch (err) {
+		log(`orphan cleanup warning: ${err}`);
+	}
+}
+
 // Main
 log("telegram daemon supervisor starting");
 log(`signal file: ${SIGNAL_FILE}`);
 log(`claude args: ${[...BASE_ARGS, ...EXTRA_ARGS].join(" ")}`);
 startWatching();
-startClaude();
+void cleanupOrphans().then(() => {
+	startClaude();
+});
