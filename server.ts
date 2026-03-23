@@ -1667,6 +1667,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         } catch (voiceErr) {
           // Fallback: sendAudio if sendVoice is forbidden (privacy settings)
           process.stderr.write(`telegram channel: sendVoice failed, trying sendAudio: ${voiceErr}\n`);
+          const errMsg = voiceErr instanceof Error ? voiceErr.message : String(voiceErr);
+          if (errMsg.includes("VOICE_MESSAGES_FORBIDDEN")) {
+            void bot.api
+              .sendMessage(
+                chat_id,
+                "Tip: I tried to send a voice reply but your Telegram privacy settings block voice messages from bots. " +
+                  "Go to Settings > Privacy and Security > Voice Messages > set to Everybody (or add me as exception).",
+                reply_to != null ? { reply_parameters: { message_id: reply_to } } : undefined,
+              )
+              .catch(() => {});
+          }
           sent = await bot.api.sendAudio(chat_id, new InputFile(audioPath), {
             title: "Voice reply",
             ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
