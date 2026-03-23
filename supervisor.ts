@@ -302,11 +302,14 @@ async function cleanupOrphans(): Promise<void> {
 // to prevent the session from becoming unresponsive.
 
 let contextWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+let lastWatchdogTrigger = 0;
 
 function startContextWatchdog(): void {
 	if (contextWatchdogTimer) return;
-	contextWatchdogTimer = setInterval(async () => {
+	contextWatchdogTimer = setInterval(() => {
 		if (!currentChild || shuttingDown) return;
+		// Debounce: don't trigger more than once per 60 seconds
+		if (Date.now() - lastWatchdogTrigger < 60_000) return;
 		try {
 			// Read the last 2KB of the stdout log to find the context percentage
 			const stat = statSync(STDOUT_LOG);
@@ -317,14 +320,16 @@ function startContextWatchdog(): void {
 			closeSync(fd);
 			const tail = buf.toString("utf-8");
 
-			// Look for context percentage pattern like "54%" or "█████░░░░░ 54%"
-			const matches = [...tail.matchAll(/(\d{1,3})%/g)];
+			// Match the status bar pattern: ░█ blocks followed by percentage
+			// This avoids false positives from message content like "I'm 85% sure"
+			const matches = [...tail.matchAll(/[█░]+\s+(\d{1,3})%/g)];
 			if (matches.length === 0) return;
 
-			// Take the last percentage found (most recent)
+			// Take the last percentage found (most recent status bar)
 			const lastPct = Number.parseInt(matches[matches.length - 1][1], 10);
 			if (lastPct >= CONTEXT_THRESHOLD_PCT && lastPct <= 100) {
 				log(`context watchdog: usage at ${lastPct}% (threshold: ${CONTEXT_THRESHOLD_PCT}%) — triggering restart`);
+				lastWatchdogTrigger = Date.now();
 				// Write a restart signal so handleRestartSignal picks it up
 				mkdirSync(join(SIGNAL_FILE, ".."), { recursive: true });
 				writeFileSync(SIGNAL_FILE, String(Date.now() + 2000));
