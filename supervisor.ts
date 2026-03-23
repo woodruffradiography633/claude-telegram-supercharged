@@ -33,6 +33,8 @@ const BASE_ARGS = [
 	"--channels",
 	"plugin:telegram@claude-plugins-official",
 	"--dangerously-skip-permissions",
+	"--model",
+	"haiku",
 ];
 
 // Extra args passed to this supervisor are forwarded to claude
