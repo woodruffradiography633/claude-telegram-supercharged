@@ -2237,6 +2237,31 @@ function flushBatch(chatId: string): void {
   const first = msgs[0];
   const last = msgs[msgs.length - 1];
 
+  // ── Instant auto-summary for batches (no AI, pure logic) ──────────
+  if (msgs.length > 1) {
+    const senders = [...new Set(msgs.map((m) => m.text.match(/\[Forwarded from ([^\]]+)\]/)?.[1]).filter(Boolean))];
+    const imageCount = msgs.filter((m) => m.media?.type === "image").length;
+    const audioCount = msgs.filter((m) => m.media?.type === "audio").length;
+    const linkCount = msgs.filter((m) => /https?:\/\//.test(m.text)).length;
+    const textCount = msgs.length - imageCount - audioCount;
+
+    const parts: string[] = [];
+    if (textCount > 0) parts.push(`${textCount} text`);
+    if (imageCount > 0) parts.push(`${imageCount} photo${imageCount > 1 ? "s" : ""}`);
+    if (audioCount > 0) parts.push(`${audioCount} voice`);
+    if (linkCount > 0) parts.push(`${linkCount} link${linkCount > 1 ? "s" : ""}`);
+
+    const senderStr = senders.length > 0 ? ` from ${senders.join(", ")}` : "";
+    const summary = `Got ${msgs.length} messages${senderStr} (${parts.join(", ")}). Processing...`;
+
+    // Send the summary instantly — fire and forget
+    void bot.api
+      .sendMessage(chatId, summary, {
+        ...(last.msgId != null ? { reply_parameters: { message_id: last.msgId } } : {}),
+      })
+      .catch(() => {});
+  }
+
   // Combine all message texts
   const combinedText = msgs.length === 1 ? msgs[0].text : msgs.map((m, i) => `[${i + 1}] ${m.text}`).join("\n\n");
 
