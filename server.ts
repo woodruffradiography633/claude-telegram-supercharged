@@ -125,6 +125,14 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const STATIC = process.env.TELEGRAM_ACCESS_MODE === "static";
 const TELEGRAPH_ENABLED = process.env.TELEGRAPH_ENABLED === "true"; // default false — opt-in
 
+// ── API keys for transcription chain + TTS (loaded from .env) ─────────
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
+const OPENAI_WHISPER_MODEL = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
+
 if (!TOKEN) {
   process.stderr.write(
     `telegram channel: TELEGRAM_BOT_TOKEN required\n  set in ${ENV_FILE}\n  format: TELEGRAM_BOT_TOKEN=123456789:AAH...\n`,
@@ -1117,6 +1125,11 @@ const mcp = new Server(
       "",
       "SESSION MANAGEMENT: Use clear_history to wipe a chat's message history. Before clearing, ALWAYS: (1) use ask_user to confirm with the user, (2) call get_history to retrieve recent messages, (3) write a 2-3 sentence summary of the conversation, (4) call save_memory with the summary so context persists across clears. (5) Send a Telegram reply confirming the reset. (6) THEN call clear_history. If the user wants a full context reset (clear both history AND conversation context), pass restart_context: true to clear_history — this signals the supervisor daemon to restart Claude for a fresh session. IMPORTANT: Send the Telegram confirmation reply BEFORE calling clear_history with restart_context, because the process will be killed ~3 seconds after the signal is written.",
       "",
+      ...(ELEVENLABS_API_KEY
+        ? [
+            "VOICE REPLIES (TTS): You have a voice_reply tool that sends voice messages via ElevenLabs text-to-speech. Use it when: (1) the user sent a voice message — reply with voice for a conversational feel, (2) the user explicitly asks for a voice reply, (3) short important messages where voice adds impact. Do NOT use for long content (over 500 chars) — use text reply instead. Always send a text reply too for accessibility. The voice adds personality, not replaces text.",
+          ]
+        : []),
       ...(TELEGRAPH_ENABLED
         ? [
             "TELEGRAPH FOR LONG CONTENT: ONLY use create_telegraph_page when content exceeds ~3000 characters AND contains multiple sections or headings — typically deep research reports, multi-part analyses, or comprehensive guides. For everything else, reply directly in chat. Most replies should NOT use Telegraph. When you do use it: write full content in Markdown, call create_telegraph_page with a title and body, then send the URL via reply. RULES: (1) REPLY MESSAGE: Keep it short — one sentence summary + the URL. No emojis. End with 👇. Example: 'Complete analysis on X. Tap Instant View to read 👇\\n\\nhttps://telegra.ph/...'. (2) IMAGES: Include relevant images when available using ![description](url) syntax. Pass chat_id for local image uploads. (3) Do NOT use Telegraph for short answers, single-paragraph responses, quick summaries, or anything under 3000 characters.",
@@ -1312,6 +1325,27 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["chat_id", "summary"],
       },
     },
+    ...(ELEVENLABS_API_KEY
+      ? [
+          {
+            name: "voice_reply",
+            description:
+              "Send a voice message reply on Telegram using text-to-speech (ElevenLabs). Converts text to speech and sends as a Telegram voice message. Use when the user asks for a voice reply, or for short important messages where voice adds impact. Do NOT use for long content — keep under 500 characters.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                chat_id: { type: "string" },
+                text: {
+                  type: "string",
+                  description: "Text to convert to speech and send as voice message. Keep under 500 chars.",
+                },
+                reply_to: { type: "string", description: "Message ID to thread under (optional)." },
+              },
+              required: ["chat_id", "text"],
+            },
+          },
+        ]
+      : []),
     ...(TELEGRAPH_ENABLED
       ? [
           {
@@ -1609,6 +1643,49 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         appendMemory(`**Chat ${chat_id}**: ${summary}`);
         return { content: [{ type: "text", text: "Memory saved. Summary will be loaded on next startup." }] };
       }
+      case "voice_reply": {
+        const chat_id = args.chat_id as string;
+        const text = args.text as string;
+        const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined;
+        assertAllowedChat(chat_id);
+        if (!ELEVENLABS_API_KEY) {
+          return {
+            content: [{ type: "text", text: "voice_reply unavailable: ELEVENLABS_API_KEY not set." }],
+            isError: true,
+          };
+        }
+        const audioPath = await ttsViaElevenLabs(text);
+        if (!audioPath) {
+          return { content: [{ type: "text", text: "TTS failed — ElevenLabs returned an error." }], isError: true };
+        }
+        // Convert mp3 to ogg/opus for Telegram voice messages
+        const oggPath = audioPath.replace(/\.mp3$/, ".ogg");
+        if (hasFfmpeg()) {
+          const ff = spawnSync("ffmpeg", ["-i", audioPath, "-c:a", "libopus", "-b:a", "64k", oggPath, "-y"], {
+            timeout: 30_000,
+            stdio: "pipe",
+          });
+          if (ff.status !== 0) {
+            // Fallback: send as audio file instead of voice
+            const sent = await bot.api.sendAudio(chat_id, new InputFile(audioPath), {
+              ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
+            });
+            return { content: [{ type: "text", text: `voice sent as audio (id: ${sent.message_id})` }] };
+          }
+        }
+        const voiceFile = existsSync(oggPath) ? oggPath : audioPath;
+        const sent = await bot.api.sendVoice(chat_id, new InputFile(voiceFile), {
+          ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
+        });
+        // Cleanup temp files
+        try {
+          rmSync(audioPath);
+        } catch {}
+        try {
+          if (oggPath !== audioPath) rmSync(oggPath);
+        } catch {}
+        return { content: [{ type: "text", text: `voice reply sent (id: ${sent.message_id})` }] };
+      }
       case "create_telegraph_page": {
         if (!TELEGRAPH_ENABLED) {
           return {
@@ -1733,43 +1810,132 @@ function videoToCollage(srcPath: string, outPath: string, maxFrames = 6): string
 }
 
 // ── Voice/audio transcription ──────────────────────────────────────
-// Priority: (1) OpenAI Whisper API if OPENAI_API_KEY is set,
-// (2) local whisper-cli (whisper.cpp), (3) local whisper (openai-whisper/pip).
+// Provider fallback chain (OpenClaw-inspired):
+//   (1) OpenAI Whisper API → (2) Groq Whisper → (3) Deepgram →
+//   (4) local whisper-cli → (5) local whisper (pip)
 // Returns the transcription text, or undefined if no transcriber is available.
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-// Configurable model: whisper-1 (default, $0.006/min) or gpt-4o-transcribe (newer, higher quality).
-const OPENAI_WHISPER_MODEL = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
-
 /**
- * Transcribe via OpenAI Whisper API. Non-blocking async fetch.
- * Returns transcription text or undefined on failure.
+ * Transcribe via OpenAI Whisper API.
  */
 async function transcribeViaOpenAI(audioPath: string): Promise<string | undefined> {
   if (!OPENAI_API_KEY) return undefined;
   try {
     const audioData = readFileSync(audioPath);
     const ext = extname(audioPath).slice(1) || "ogg";
-    const filename = `voice.${ext}`;
-
     const formData = new FormData();
-    formData.append("file", new Blob([audioData]), filename);
+    formData.append("file", new Blob([audioData]), `voice.${ext}`);
     formData.append("model", OPENAI_WHISPER_MODEL);
-
     const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
       body: formData,
     });
     if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      process.stderr.write(`telegram channel: OpenAI Whisper API error ${res.status}: ${errText}\n`);
+      process.stderr.write(
+        `telegram channel: OpenAI Whisper error ${res.status}: ${await res.text().catch(() => "")}\n`,
+      );
       return undefined;
     }
     const data = (await res.json()) as { text?: string };
     return data.text?.trim() || undefined;
   } catch (err) {
-    process.stderr.write(`telegram channel: OpenAI Whisper API failed: ${err}\n`);
+    process.stderr.write(`telegram channel: OpenAI Whisper failed: ${err}\n`);
+    return undefined;
+  }
+}
+
+/**
+ * Transcribe via Groq Whisper API (OpenAI-compatible endpoint, very fast).
+ */
+async function transcribeViaGroq(audioPath: string): Promise<string | undefined> {
+  if (!GROQ_API_KEY) return undefined;
+  try {
+    const audioData = readFileSync(audioPath);
+    const ext = extname(audioPath).slice(1) || "ogg";
+    const formData = new FormData();
+    formData.append("file", new Blob([audioData]), `voice.${ext}`);
+    formData.append("model", "whisper-large-v3-turbo");
+    const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: formData,
+    });
+    if (!res.ok) {
+      process.stderr.write(`telegram channel: Groq Whisper error ${res.status}: ${await res.text().catch(() => "")}\n`);
+      return undefined;
+    }
+    const data = (await res.json()) as { text?: string };
+    return data.text?.trim() || undefined;
+  } catch (err) {
+    process.stderr.write(`telegram channel: Groq Whisper failed: ${err}\n`);
+    return undefined;
+  }
+}
+
+/**
+ * Transcribe via Deepgram API (streaming-friendly, fast).
+ */
+async function transcribeViaDeepgram(audioPath: string): Promise<string | undefined> {
+  if (!DEEPGRAM_API_KEY) return undefined;
+  try {
+    const audioData = readFileSync(audioPath);
+    const ext = extname(audioPath).slice(1) || "ogg";
+    const mimeType = ext === "oga" || ext === "ogg" ? "audio/ogg" : `audio/${ext}`;
+    const res = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&detect_language=true", {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${DEEPGRAM_API_KEY}`,
+        "Content-Type": mimeType,
+      },
+      body: audioData,
+    });
+    if (!res.ok) {
+      process.stderr.write(`telegram channel: Deepgram error ${res.status}: ${await res.text().catch(() => "")}\n`);
+      return undefined;
+    }
+    const data = (await res.json()) as {
+      results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
+    };
+    return data.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() || undefined;
+  } catch (err) {
+    process.stderr.write(`telegram channel: Deepgram failed: ${err}\n`);
+    return undefined;
+  }
+}
+
+/**
+ * Text-to-speech via ElevenLabs. Returns path to generated audio file, or undefined.
+ */
+async function ttsViaElevenLabs(text: string): Promise<string | undefined> {
+  if (!ELEVENLABS_API_KEY) return undefined;
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+      method: "POST",
+      headers: {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+    if (!res.ok) {
+      process.stderr.write(
+        `telegram channel: ElevenLabs TTS error ${res.status}: ${await res.text().catch(() => "")}\n`,
+      );
+      return undefined;
+    }
+    const audioBuffer = Buffer.from(await res.arrayBuffer());
+    const outPath = join(INBOX_DIR, `tts-${Date.now()}.mp3`);
+    mkdirSync(INBOX_DIR, { recursive: true });
+    writeFileSync(outPath, audioBuffer);
+    return outPath;
+  } catch (err) {
+    process.stderr.write(`telegram channel: ElevenLabs TTS failed: ${err}\n`);
     return undefined;
   }
 }
@@ -1823,13 +1989,19 @@ function hasFfmpeg(): boolean {
 
 /**
  * Transcribe an audio file. Returns the transcription text or undefined.
- * Priority: (1) OpenAI Whisper API, (2) whisper-cli, (3) openai-whisper local.
+ * Provider fallback chain: OpenAI → Groq → Deepgram → local whisper-cli → local whisper.
  * Uses spawnSync (array args) for local tools to prevent shell injection.
  */
 async function transcribeAudio(audioPath: string): Promise<string | undefined> {
-  // Try OpenAI Whisper API first (non-blocking, higher quality)
+  // Cloud provider fallback chain (each returns undefined if key not set or on failure)
   const openaiResult = await transcribeViaOpenAI(audioPath);
   if (openaiResult) return openaiResult;
+
+  const groqResult = await transcribeViaGroq(audioPath);
+  if (groqResult) return groqResult;
+
+  const deepgramResult = await transcribeViaDeepgram(audioPath);
+  if (deepgramResult) return deepgramResult;
 
   // Fall back to local whisper binaries
   const bin = findWhisperBin();
@@ -2469,7 +2641,13 @@ void bot.start({
   onStart: (info) => {
     botUsername = info.username;
     process.stderr.write(`telegram channel: polling as @${info.username}\n`);
-    const whisperMethod = OPENAI_API_KEY ? `OpenAI API (${OPENAI_WHISPER_MODEL})` : findWhisperBin() || "none";
-    process.stderr.write(`telegram channel: transcription: ${whisperMethod}\n`);
+    const chain = [
+      OPENAI_API_KEY && `OpenAI(${OPENAI_WHISPER_MODEL})`,
+      GROQ_API_KEY && "Groq",
+      DEEPGRAM_API_KEY && "Deepgram",
+      findWhisperBin() || null,
+    ].filter(Boolean);
+    process.stderr.write(`telegram channel: transcription chain: ${chain.length > 0 ? chain.join(" → ") : "none"}\n`);
+    if (ELEVENLABS_API_KEY) process.stderr.write(`telegram channel: TTS: ElevenLabs (voice ${ELEVENLABS_VOICE_ID})\n`);
   },
 });
