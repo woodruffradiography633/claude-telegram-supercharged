@@ -2430,12 +2430,16 @@ bot.on("message:photo", async (ctx) => {
 
 bot.on("message:voice", async (ctx) => {
   const caption = ctx.message.caption ?? "(voice message)";
-  // React with ✍ (writing) immediately to signal we're transcribing
-  const chatId = String(ctx.chat!.id);
-  const msgId = ctx.message.message_id;
-  void bot.api
-    .setMessageReaction(chatId, msgId, [{ type: "emoji", emoji: "✍" as ReactionTypeEmoji["emoji"] }])
-    .catch(() => {});
+  // React with ✍ only in DMs (not groups) — in groups, we only process when mentioned
+  const chatType = ctx.chat?.type;
+  const isDM = chatType === "private";
+  if (isDM) {
+    const chatId = String(ctx.chat!.id);
+    const msgId = ctx.message.message_id;
+    void bot.api
+      .setMessageReaction(chatId, msgId, [{ type: "emoji", emoji: "✍" as ReactionTypeEmoji["emoji"] }])
+      .catch(() => {});
+  }
   await handleInbound(ctx, caption, async () => {
     const voice = ctx.message.voice;
     // Reuse file + transcription from the middleware cache if available.
