@@ -34,7 +34,8 @@ Drop-in upgrade for the [official Claude Code Telegram plugin](https://github.co
 
 | Feature | What it does |
 | --- | --- |
-| **🎤 Voice Messages** | Talk to Claude. OpenAI Whisper API (primary) or local whisper (fallback) transcribes your voice server-side -- like Wispr Flow for Claude Code. Works from your phone while walking. |
+| **🎤 Voice Messages** | Talk to Claude. Provider fallback chain: OpenAI Whisper → Groq → Deepgram → local whisper-cli. Works from your phone while walking. |
+| **🔊 Voice Replies (TTS)** | Claude replies with voice messages via ElevenLabs text-to-speech. OGG/Opus native format. Auto-fallback to audio file if voice is restricted. Set `ELEVENLABS_API_KEY` in `.env`. |
 | **🎤 Auto-transcribe in History** | ALL voice messages in group chats are transcribed, even without mentioning the bot. Claude has full context of what everyone said. Configurable via `autoTranscribe`. |
 | **🧠 Conversation Memory** | `/clean` saves a summary before clearing. Memory persists across sessions. Claude never forgets what you talked about. |
 | **💬 Message History** | SQLite-backed rolling store. Claude has context across restarts. `get_history` + `search_messages` tools. No more "what were we talking about?" |
@@ -56,6 +57,7 @@ Drop-in upgrade for the [official Claude Code Telegram plugin](https://github.co
 | **📊 Smart Caching** | Voice/audio files cached between middleware and handlers. No double downloads, no double transcriptions. |
 | **🖥 Daemon Management** | `/telegram:daemon start\|stop\|restart\|status\|logs` -- full lifecycle management. `/telegram:monitor` for health dashboard with remote control URL. |
 | **📸 Headless Screenshots** | `/screenshot` skill uses Playwright to capture web pages headlessly -- works in daemon mode where Chrome isn't available. |
+| **⚡ Two-Tier Model Routing** | Haiku handles simple messages instantly (<5s). Complex tasks auto-escalate to Opus via subagents. 80-95% of messages get instant responses. |
 
 ## Getting Started
 
