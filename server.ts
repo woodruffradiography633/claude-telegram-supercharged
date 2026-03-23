@@ -547,8 +547,9 @@ function checkSchedules(): void {
   for (const job of jobs) {
     const fireTime = new Date(job.next_fire).getTime();
     if (fireTime <= now) {
-      // Fire the job — send message to Telegram
-      void bot.api.sendMessage(job.chat_id, `⏰ ${job.label ? `${job.label}\n\n` : ""}${job.text}`).catch((err) => {
+      // Fire the job — send a clean single-line reminder
+      const reminderText = job.label && job.label !== job.text ? `⏰ ${job.label}` : `⏰ ${job.text}`;
+      void bot.api.sendMessage(job.chat_id, reminderText).catch((err) => {
         process.stderr.write(`telegram channel: schedule fire failed: ${err}\n`);
       });
       changed = true;
