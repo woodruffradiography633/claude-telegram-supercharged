@@ -1658,31 +1658,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!audioPath) {
           return { content: [{ type: "text", text: "TTS failed — ElevenLabs returned an error." }], isError: true };
         }
-        // Convert mp3 to ogg/opus for Telegram voice messages
-        const oggPath = audioPath.replace(/\.mp3$/, ".ogg");
-        if (hasFfmpeg()) {
-          const ff = spawnSync("ffmpeg", ["-i", audioPath, "-c:a", "libopus", "-b:a", "64k", oggPath, "-y"], {
-            timeout: 30_000,
-            stdio: "pipe",
-          });
-          if (ff.status !== 0) {
-            // Fallback: send as audio file instead of voice
-            const sent = await bot.api.sendAudio(chat_id, new InputFile(audioPath), {
-              ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
-            });
-            return { content: [{ type: "text", text: `voice sent as audio (id: ${sent.message_id})` }] };
-          }
-        }
-        const voiceFile = existsSync(oggPath) ? oggPath : audioPath;
-        const sent = await bot.api.sendVoice(chat_id, new InputFile(voiceFile), {
+        // ElevenLabs returns OGG/Opus directly — no ffmpeg conversion needed
+        const sent = await bot.api.sendVoice(chat_id, new InputFile(audioPath), {
           ...(reply_to != null ? { reply_parameters: { message_id: reply_to } } : {}),
         });
-        // Cleanup temp files
         try {
           rmSync(audioPath);
-        } catch {}
-        try {
-          if (oggPath !== audioPath) rmSync(oggPath);
         } catch {}
         return { content: [{ type: "text", text: `voice reply sent (id: ${sent.message_id})` }] };
       }
@@ -1910,19 +1891,22 @@ async function transcribeViaDeepgram(audioPath: string): Promise<string | undefi
 async function ttsViaElevenLabs(text: string): Promise<string | undefined> {
   if (!ELEVENLABS_API_KEY) return undefined;
   try {
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-      method: "POST",
-      headers: {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        Accept: "audio/mpeg",
+    // Request OGG/Opus directly — Telegram's native voice format, no ffmpeg needed
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_16000`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
       },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_multilingual_v2",
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      }),
-    });
+    );
     if (!res.ok) {
       process.stderr.write(
         `telegram channel: ElevenLabs TTS error ${res.status}: ${await res.text().catch(() => "")}\n`,
@@ -1930,7 +1914,7 @@ async function ttsViaElevenLabs(text: string): Promise<string | undefined> {
       return undefined;
     }
     const audioBuffer = Buffer.from(await res.arrayBuffer());
-    const outPath = join(INBOX_DIR, `tts-${Date.now()}.mp3`);
+    const outPath = join(INBOX_DIR, `tts-${Date.now()}.ogg`);
     mkdirSync(INBOX_DIR, { recursive: true });
     writeFileSync(outPath, audioBuffer);
     return outPath;
