@@ -1893,7 +1893,7 @@ async function ttsViaElevenLabs(text: string): Promise<string | undefined> {
   try {
     // Request OGG/Opus directly — Telegram's native voice format, no ffmpeg needed
     const res = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_16000`,
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_48000_64`,
       {
         method: "POST",
         headers: {
