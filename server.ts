@@ -2464,7 +2464,28 @@ bot.on("message", async (ctx, next) => {
 });
 
 bot.on("message:text", async (ctx) => {
+  // Debug: log forwarded messages
+  if (ctx.message.forward_origin) {
+    process.stderr.write(
+      `telegram channel: forwarded text message received — from_id=${ctx.from?.id}, chat=${ctx.chat?.id}, text_len=${ctx.message.text?.length ?? 0}, forward_type=${ctx.message.forward_origin.type}\n`,
+    );
+  }
   await handleInbound(ctx, ctx.message.text, undefined);
+});
+
+// Catch-all: log messages that don't match any handler (forwarded without text?)
+bot.on("message", async (ctx) => {
+  const msg = ctx.message;
+  if (msg && !msg.text && !msg.photo && !msg.voice && !msg.audio && !msg.sticker && !msg.animation && !msg.document) {
+    process.stderr.write(
+      `telegram channel: unhandled message type — keys: ${Object.keys(msg).filter((k) => !["message_id", "from", "chat", "date", "forward_origin", "forward_date"].includes(k)).join(",")}, from=${msg.from?.id}, chat=${msg.chat?.id}\n`,
+    );
+    // If it has forward_origin but no text, try to use caption or any available text
+    const fallbackText = (msg as any).caption ?? "(forwarded message with no text)";
+    if (msg.forward_origin) {
+      await handleInbound(ctx, fallbackText, undefined);
+    }
+  }
 });
 
 bot.on("message:photo", async (ctx) => {
@@ -2923,6 +2944,21 @@ async function handleInbound(
   const replyContext: Record<string, string> = {};
   if (replyToMsg) {
     replyContext.reply_to_message_id = String(replyToMsg.message_id);
+
+    // Debug: log what Telegram actually sends in reply_to_message
+    const debugFields = {
+      has_text: !!replyToMsg.text,
+      text_len: replyToMsg.text?.length ?? 0,
+      has_caption: !!replyToMsg.caption,
+      caption_len: replyToMsg.caption?.length ?? 0,
+      has_forward_origin: !!(replyToMsg as any).forward_origin,
+      has_from: !!replyToMsg.from,
+      from_username: replyToMsg.from?.username,
+      msg_id: replyToMsg.message_id,
+      has_quote: !!(ctx.message as any)?.quote,
+      quote_text: (ctx.message as any)?.quote?.text?.slice(0, 100),
+    };
+    process.stderr.write(`telegram channel: reply_to debug: ${JSON.stringify(debugFields)}\n`);
 
     // Try multiple sources for the replied-to message text:
     // 1. Telegram's reply_to_message.text or .caption
